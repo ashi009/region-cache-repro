@@ -47,15 +47,15 @@ A/B at `M=150`, `K=60`, depth `6` — identical goals, only the ParamEnv region 
 | region in ParamEnv (`<'a, U: 'a>`) | **455.5 ms** | 492 ms |
 | no region (`()`) | **3.9 ms** | 38 ms |
 
-Scaling in number of root goals `M`:
+Scaling in number of root goals `M` (`evaluate_obligation` self time):
 
-| M | region=on wall | region=off wall |
+| M | region=on | region=off |
 |---|---|---|
-| 75 | 260 ms | 35 ms |
-| 150 | 492 ms | 38 ms |
-| 300 | 946 ms | 45 ms |
+| 75 | 224 ms | 3.30 ms |
+| 150 | 453 ms | 3.44 ms |
+| 300 | 894 ms | 3.67 ms |
 
-region=on grows ~linearly; region=off is flat. The next-gen solver
+region=on grows ~linearly with the root count; region=off is flat. The next-gen solver
 (`-Znext-solver=globally`) does not exhibit the blowup on this repro.
 
 ### Root cause
