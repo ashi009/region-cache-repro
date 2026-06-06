@@ -23,8 +23,11 @@ run() { # rsfile label extra-flags
   local eo="(install \`summarize\` for breakdown)"
   if command -v summarize >/dev/null 2>&1; then
     local p; p="$(ls "$d"/*.mm_profdata 2>/dev/null | head -1)"
+    # evaluate_obligation is absent from the profile under -Znext-solver (it's no
+    # longer a hot query); tolerate that instead of failing under pipefail.
     [ -n "$p" ] && eo="$(summarize summarize "${p%.mm_profdata}" 2>/dev/null \
-      | grep 'evaluate_obligation ' | grep -oE '[0-9]+\.[0-9]+(ms|s)' | head -1)"
+      | grep 'evaluate_obligation ' | grep -oE '[0-9]+\.[0-9]+(ms|s)' | head -1 || true)"
+    [ -z "$eo" ] && eo="(not a hot query)"
   fi
   printf "  %-22s wall=%5sms   evaluate_obligation=%s\n" "$2" $(( (t1 - t0) / 1000000 )) "$eo"
   rm -rf "$d"

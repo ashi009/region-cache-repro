@@ -9,6 +9,16 @@
 // forces the result into the per-inference-context LOCAL evaluation cache.
 // Without the region (`fn check_i()`), `Deep: Send` is proven once and shared
 // via the global cache.
+//
+// The `<'a, U: 'a>` here is a stand-in for the real-world region source in async
+// code: `#[async_trait]` desugars `async fn m(&self) -> R` into
+//   fn m<'life0,'async_trait>(&'life0 self)
+//       -> Pin<Box<dyn Future<Output=R> + Send + 'async_trait>>
+//   where Self: 'async_trait, 'life0: 'async_trait;
+// so the `Send` proof of every such method runs under a ParamEnv carrying those
+// outlives bounds. The workaround (see ISSUE.md) flips to an *owned*, `'static`
+// boxed future (clone `self` into `async move`), which has no lifetime and so
+// proves `Send` against the GLOBAL cache — the `fn check_i()` column here.
 
 use std::sync::{Arc, Mutex};
 
