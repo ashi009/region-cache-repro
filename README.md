@@ -38,9 +38,9 @@ a real async crate we measured the same sub-proof rebuilt **592×–1191×**, wi
 
 ## Root cause, in rustc
 
-`SelectionContext::can_use_global_caches`
-(`rustc_trait_selection/src/traits/select/mod.rs`) shares a result via the
-crate-wide `tcx.evaluation_cache` only if the `ParamEnv` is infer-free:
+[`SelectionContext::can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518)
+shares a result via the crate-wide `tcx.evaluation_cache` only if the `ParamEnv` is
+infer-free:
 
 ```rust
 if param_env.has_infer() || pred.has_infer() {
@@ -50,18 +50,18 @@ if param_env.has_infer() || pred.has_infer() {
 
 Why an outlives bound trips this but a plain `&self` doesn't:
 
-- **`ParamEnv` is just its `caller_bounds`** — the in-scope where-clauses
-  (`rustc_middle/src/ty/mod.rs`). `has_infer()` walks the regions inside them.
+- **`ParamEnv` is just its [`caller_bounds`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/mod.rs#L1002-L1009)**
+  — the in-scope where-clauses. `has_infer()` walks the regions inside them.
 - **`where Self: 'a` / `'life0: 'a` lowers to region-bearing clauses**
-  (`ClauseKind::TypeOutlives` / `RegionOutlives`,
-  `rustc_hir_analysis/.../predicates_of.rs`) that land in `caller_bounds`. A `&self`
-  borrow or `+ '_` return is a signature *type*, not a where-clause — it adds
-  nothing, so that `ParamEnv` is region-free.
-- **The `evaluate_obligation` query** canonicalizes `param_env.and(predicate)` and
-  rebuilds it in a fresh `InferCtxt` where each canonical region becomes a fresh
-  `ReVar` (`build_with_canonical` → `instantiate_canonical_var`). So the outlives
-  clauses' regions return as infer vars ⇒ `has_infer()` is true ⇒ local cache ⇒
-  re-derived per handler.
+  ([`ClauseKind::TypeOutlives` / `RegionOutlives`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_hir_analysis/src/collect/predicates_of.rs#L303-L322))
+  that land in `caller_bounds`. A `&self` borrow or `+ '_` return is a signature
+  *type*, not a where-clause — it adds nothing, so that `ParamEnv` is region-free.
+- **The `evaluate_obligation` query** [canonicalizes `param_env.and(predicate)`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/query/evaluate_obligation.rs#L114-L116)
+  and rebuilds it in a fresh `InferCtxt` where each canonical region becomes a fresh
+  [`ReVar`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_infer/src/infer/canonical/mod.rs#L121-L123)
+  (`build_with_canonical` → `instantiate_canonical_var`). So the outlives clauses'
+  regions return as infer vars ⇒ `has_infer()` is true ⇒ local cache ⇒ re-derived
+  per handler.
 
 (The eval cache key's *predicate* half is already region-erased by the freshener;
 only the `ParamEnv` half isn't — that's the asymmetry. Region-sensitive results are

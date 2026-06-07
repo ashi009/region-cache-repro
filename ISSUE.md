@@ -11,9 +11,9 @@ waste. The trigger is exactly the `where Self: 'async_trait` bound that
 
 ### Mechanism
 
-`SelectionContext::can_use_global_caches`
-(`rustc_trait_selection/src/traits/select/mod.rs`) routes a trait-evaluation result
-to the cross-goal `tcx.evaluation_cache` only if the `ParamEnv` is infer-free:
+[`SelectionContext::can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518)
+routes a trait-evaluation result to the cross-goal `tcx.evaluation_cache` only if
+the `ParamEnv` is infer-free:
 
 ```rust
 // If there are any inference variables in the `ParamEnv`, then we
@@ -27,24 +27,22 @@ The reason a *lifetime* trips this — and specifically an **outlives where-boun
 not a `&self` borrow — is a short chain through the source:
 
 1. **`ParamEnv` is just its `caller_bounds`** — the in-scope where-clauses
-   (`rustc_middle/src/ty/mod.rs`, `pub struct ParamEnv { caller_bounds: Clauses }`).
+   ([`pub struct ParamEnv { caller_bounds: Clauses }`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/mod.rs#L1002-L1009)).
    `has_infer()` folds over those clauses and the regions inside them.
 
 2. **An outlives bound lowers into a region-bearing clause in `caller_bounds`.**
-   `where 'life0: 'a` → `ClauseKind::RegionOutlives`, `where Self: 'a` →
-   `ClauseKind::TypeOutlives` (`rustc_hir_analysis/src/collect/predicates_of.rs`,
-   `gather_explicit_predicates_of`), each carrying the item's early/late-bound
-   regions. A `&self` parameter or a `+ '_` / RPITIT return is a *signature type*,
-   not a where-clause — it adds **nothing** to `caller_bounds`, so that `ParamEnv`
-   is region-free.
+   `where 'life0: 'a` → [`ClauseKind::RegionOutlives`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_hir_analysis/src/collect/predicates_of.rs#L303-L322),
+   `where Self: 'a` → `ClauseKind::TypeOutlives`, each carrying the item's
+   early/late-bound regions. A `&self` parameter or a `+ '_` / RPITIT return is a
+   *signature type*, not a where-clause — it adds **nothing** to `caller_bounds`, so
+   that `ParamEnv` is region-free.
 
 3. **The `evaluate_obligation` query re-instantiates those regions as inference
-   vars.** It canonicalizes `param_env.and(predicate)`
-   (`traits/query/evaluate_obligation.rs`) and `build_with_canonical`
-   (`rustc_traits/src/evaluate_obligation.rs`) rebuilds the goal in a fresh
-   `InferCtxt`, where `instantiate_canonical_var` turns each canonical region into a
-   fresh `ReVar` (`rustc_infer/src/infer/canonical/mod.rs`). So the regions the
-   outlives clauses put in `caller_bounds` come back as `ReVar`s ⇒
+   vars.** It [canonicalizes `param_env.and(predicate)`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/query/evaluate_obligation.rs#L114-L116)
+   and [`build_with_canonical`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_traits/src/evaluate_obligation.rs#L22-L25)
+   rebuilds the goal in a fresh `InferCtxt`, where
+   [`instantiate_canonical_var` turns each canonical region into a fresh `ReVar`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_infer/src/infer/canonical/mod.rs#L121-L123).
+   So the regions the outlives clauses put in `caller_bounds` come back as `ReVar`s ⇒
    `param_env.has_infer()` is `true` ⇒ the result goes to the local cache and is
    **re-derived from scratch on every root goal**.
 
@@ -80,10 +78,11 @@ wrong once it's resolved, and `tcx.evaluation_cache` outlives the `InferCtxt`. F
 region-independent:
 
 - The eval cache key's **predicate** half is region-erased by the freshener
-  (`rustc_infer/src/infer/freshen.rs`, `fold_region → 'erased`: *"in general, we do
-  not take region relationships into account when making type-overloaded
-  decisions"*). Only the **`ParamEnv`** half (`typing_env(param_env)`) is not — that's
-  the asymmetry: the surviving region vars live there.
+  ([`fold_region → 'erased`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_infer/src/infer/freshen.rs#L101-L114):
+  [*"in general, we do not take region relationships into account when making
+  type-overloaded decisions"*](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_infer/src/infer/freshen.rs#L26-L32)).
+  Only the **`ParamEnv`** half is not — that's the asymmetry: the surviving region
+  vars live there.
 - Region-sensitivity is encoded in the *result* (`EvaluatedToOkModuloRegions`), not
   by cache exclusion. The framework already knows how to say "region-independent."
 - The tools to narrow the gate exist and are used in the same file:
