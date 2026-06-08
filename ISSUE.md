@@ -95,6 +95,9 @@ region-independent.
 
 ### Repro & measurements
 
+Standalone repro (generators, drivers, this writeup):
+**https://github.com/ashi009/region-cache-repro**.
+
 `gen.py K D M region` emits `K` deeply-nested `Arc<Mutex<Vec<…>>>` fields in one
 struct, `M` wrappers each containing it, and `M` `Send` assertions — with
 (`<'a, U: 'a>`) or without a region outlives bound. `evaluate_obligation` self
