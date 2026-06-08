@@ -160,7 +160,10 @@ predicates (**1,191×** re-derivation), 99.3% of inserts to the local cache, 100
 those blocked by region-only `ParamEnv` inference; siblings 592× and 638×.
 Overwhelmingly `Send`/`Sync` of ordinary std containers, not coroutine witnesses.
 Even at `-Copt-level=0`, a mid-sized async crate has `evaluate_obligation` as the #1
-query (~18% / 282 ms). The symptom is widely reported (e.g.
+query (~18% / 282 ms). **Caveat:** these figures are from a *private* instrumented
+rustc build on a closed-source codebase — they are not independently reproducible.
+The attached public repro reproduces the *mechanism* and its scaling, not these
+absolute numbers. The symptom is widely reported (e.g.
 [#87012](https://github.com/rust-lang/rust/issues/87012), `evaluate_obligation`
 ~85%; axum [#200](https://github.com/tokio-rs/axum/issues/200)) but attributed to
 monomorphization / nested builders, not region-driven cache bypass.
