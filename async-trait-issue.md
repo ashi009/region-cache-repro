@@ -66,7 +66,8 @@ is unchanged.
   any compiler change, and only for the case where the macro is currently emitting a
   bound it doesn't need.
 
-If you're open to it in principle, I'm happy to send a PR (gated to the
-receiver-only case, behind the existing tests). Reasonable to close if you'd still
-rather keep this purely a rustc concern — just wanted to bring the precise trigger
-and the equivalence, which weren't known at #174.
+I'll follow up with a PR implementing this — gated strictly to the receiver-only
+case, with the existing test suite as the guard — so the change is concrete to
+evaluate rather than hypothetical. Entirely reasonable to close if you'd still
+rather keep this a pure rustc concern; the aim is just to surface the precise
+trigger and the lowering equivalence, which weren't known at #174.
