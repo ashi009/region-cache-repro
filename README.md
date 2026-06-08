@@ -129,20 +129,23 @@ Native `async fn`/`-> impl Future` in traits (RPITIT, 1.75+) capture input lifet
 in the opaque return type **without** emitting a `where Self: 'async_trait` outlives
 bound, so they are region-free and don't trigger the blowup — including the two
 shapes the `#[async_trait]` fast-path above can't rescue (extra reference args, and
-generic methods). The catch is dyn-compatibility. Measured at `M=150`, rustc 1.96,
-deep `Arc<Mutex<…>>` state, `evaluate_obligation` self time:
+generic methods). The catch is dyn-compatibility. All rows below measured through the
+**identical** `rustc` command (`--crate-type=lib --edition 2021 -Copt-level=3
+--emit=metadata`, rustc 1.96, K=40 D=6 M=150, deep `Arc<Mutex<…>>` state),
+`evaluate_obligation` self time, median of 3:
 
 | approach | `dyn`-compatible | `Send` futures | M=150 | use when |
 |---|---|---|---|---|
-| `#[async_trait]` | ✅ | ✅ | **564 ms** | — (the problem) |
-| native RPITIT `-> impl Future + Send` | ❌ | ✅ | **~6–9 ms** | static dispatch; **only** option for generic methods (never `dyn`-able anyway) |
+| `#[async_trait]` | ✅ | ✅ | **~870 ms** | — (the problem) |
+| the fast-path above (`+ '_`) | ✅ | ✅ | **~9.5 ms** | non-generic, receiver-only borrow |
+| native RPITIT `-> impl Future + Send` | ❌ | ✅ | **~5.4 ms** | static dispatch; **only** option for generic methods (never `dyn`-able anyway) |
 | [`trait_variant`](https://crates.io/crates/trait-variant) | ❌ (E0038) | ✅ | — | adds a `Send` variant to RPITIT; still static-only |
-| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | ✅ | ✅ | **7.99 ms** | you need `dyn` **and** `Send` futures |
+| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | ✅ | ✅ | **~5.7 ms** | you need `dyn` **and** `Send` futures |
 
 `dynosaur`'s generated erasure layer does emit a `Self: 'dynosaur` bound, so it looks
 like it should blow up — but the expensive `Send` proof happens at the user's
 region-free RPITIT impl and is cached, so it stays flat (measured, not inferred:
-7.99 ms vs async-trait's 564 ms through the identical build). Note its default
+~5.7 ms vs async-trait's ~870 ms through the identical command). Note its default
 `dyn(box)` mode produces **non-`Send`** futures (useless for `tokio::spawn`); you must
 declare the method `-> impl Future + Send` to get a `Send` boxed future.
 
