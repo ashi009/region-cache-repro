@@ -54,13 +54,16 @@ is unchanged.
 
 ### Scope / honesty
 
-- Applies cleanly when the **only reference input is the receiver** (`&self` /
-  `&mut self`), with all other params owned — the common service/handler shape.
-- Methods that borrow **additional** reference parameters genuinely need to express
-  "future lives at most as long as the shortest input," which is what the
-  `'async_trait` + outlives scheme encodes; collapsing those to one lifetime would
-  change the signature contract, so those should keep the current lowering. So this
-  is a fast-path for the common case, not a wholesale change.
+- Applies when the **only reference input is the receiver** (`&self` / `&mut self`),
+  all other params are owned, **and the method has no generic type/const parameters**
+  — the common concrete service/handler shape.
+- Two cases that must keep the current lowering (verified — both re-trigger the same
+  cache miss, so there's no win): methods that borrow **additional** reference
+  parameters (the future's lifetime is the *shortest* input, which needs the
+  `'async_trait` lower-bound; unifying them would change the signature contract); and
+  **generic** methods, because a boxed future capturing `T` requires `where T: 'lt`,
+  itself a region-bearing clause. So this is a fast-path for the common concrete
+  case, not a wholesale change.
 - I realize the established position (#174) is that the cost is rustc's to fix, and
   that's still true long-term — but this would help every stable user now, ahead of
   any compiler change, and only for the case where the macro is currently emitting a
