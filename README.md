@@ -123,35 +123,48 @@ Orthogonal levers: opaque future boundary (`#[inline(never)]` helper returning b
 Don't help: `tower::ServiceBuilder` (different cost), `#[axum::debug_handler]`
 (diagnostics only), cranelift/linker (codegen, not trait solving).
 
-### RPITIT-based alternatives (when you control the trait)
+### RPITIT-based alternatives — they move the cost, they don't remove it
 
 Native `async fn`/`-> impl Future` in traits (RPITIT, 1.75+) capture input lifetimes
-in the opaque return type **without** emitting a `where Self: 'async_trait` outlives
-bound, so they are region-free and don't trigger the blowup — including the two
-shapes the `#[async_trait]` fast-path above can't rescue (extra reference args, and
-generic methods). The catch is dyn-compatibility. All rows below measured through the
-**identical** `rustc` command (`--crate-type=lib --edition 2021 -Copt-level=3
---emit=metadata`, rustc 1.96, K=40 D=6 M=150, deep `Arc<Mutex<…>>` state),
-`evaluate_obligation` self time, median of 3:
+in the opaque return type **without** a `where Self: 'async_trait` outlives bound, so
+they're region-free and avoid the `evaluate_obligation` blowup — including the two
+shapes the fast-path can't rescue (extra reference args, generic methods).
 
-| approach | `dyn`-compatible | `Send` futures | M=150 | use when |
-|---|---|---|---|---|
-| `#[async_trait]` | ✅ | ✅ | **~870 ms** | — (the problem) |
-| the fast-path above (`+ '_`) | ✅ | ✅ | **~9.5 ms** | non-generic, receiver-only borrow |
-| native RPITIT `-> impl Future + Send` | ❌ | ✅ | **~5.4 ms** | static dispatch; **only** option for generic methods (never `dyn`-able anyway) |
-| [`trait_variant`](https://crates.io/crates/trait-variant) | ❌ (E0038) | ✅ | — | adds a `Send` variant to RPITIT; still static-only |
-| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | ✅ | ✅ | **~5.7 ms** | you need `dyn` **and** `Send` futures |
+**But that frontend win does not make total compile time faster — it makes it
+slightly worse.** `#[async_trait]` *erases* every future into `Pin<Box<dyn Future>>`,
+so the state machine isn't monomorphized at call sites. RPITIT keeps the future
+**concrete**, so LLVM optimizes each (large) state machine inline. The trait-solving
+saving is small; the extra codegen is larger. Measured through one **identical**
+command (`cargo rustc --release -- -Zself-profile`, rustc 1.92-nightly, 120 impls,
+non-trivial future bodies — 12 `.await`s each):
 
-`dynosaur`'s generated erasure layer does emit a `Self: 'dynosaur` bound, so it looks
-like it should blow up — but the expensive `Send` proof happens at the user's
-region-free RPITIT impl and is cached, so it stays flat (measured, not inferred:
-~5.7 ms vs async-trait's ~870 ms through the identical command). Note its default
-`dyn(box)` mode produces **non-`Send`** futures (useless for `tokio::spawn`); you must
-declare the method `-> impl Future + Send` to get a `Send` boxed future.
+| approach | total cpu | `evaluate_obligation` | LLVM | dyn? | Send? |
+|---|---|---|---|---|---|
+| `#[async_trait]` | **4.90 s** | 17.9 ms | 1.25 s | ✅ | ✅ |
+| the `&self` fast-path (our PR) | **4.68 s** | 7.1 ms | 1.09 s | ✅ | ✅ |
+| native RPITIT `-> impl Future + Send` | 5.26 s (+7%) | 8.0 ms | 1.46 s (+17%) | ❌ | ✅ |
+| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | 5.11 s (+4%) | 8.7 ms | 1.39 s (+11%) | ✅ | ✅ |
+| [`trait_variant`](https://crates.io/crates/trait-variant) | — | — | — | ❌ (E0038) | ✅ |
 
-So: generic methods → RPITIT (dyn was never possible); `&self` + extra ref args needing
-`dyn` → `dynosaur`; plain `&self` needing `dyn` → either the async-trait fast-path or
-`dynosaur`.
+The split that matters: **our fast-path keeps the boxing**, so codegen is unchanged
+and the frontend saving is pure — total is equal-to-slightly-better. **RPITIT and
+`dynosaur` change the dispatch** (erased → monomorphized), trading a small frontend
+saving for a bigger codegen cost, so total is *worse* with non-trivial futures. The
+gap widens further with generic callers (each instantiation monomorphizes the whole
+await chain), which these benches don't even include.
+
+So RPITIT/`dynosaur` are **not** a compile-time fix — reach for them when you want
+native syntax or to drop the macro, accepting the codegen tradeoff, not to speed up
+builds. (Two correctness notes if you do: `trait_variant` is not dyn-compatible —
+E0038; `dynosaur`'s default `dyn(box)` mode yields **non-`Send`** futures, so you must
+write `-> impl Future + Send` for `tokio::spawn`.) The only changes here that reduce
+total compile time without a codegen penalty are the boxing-preserving fast-path and
+the upstream rustc cache fix.
+
+Caveat on these numbers: a single machine, one rustc, trivial-to-moderate futures;
+they establish the *direction* (frontend saving < codegen cost for the monomorphizing
+forms), not a universal magnitude. On a crate where `evaluate_obligation` genuinely
+dominates total time, the balance can tilt the other way — measure your own.
 
 ## Files
 
