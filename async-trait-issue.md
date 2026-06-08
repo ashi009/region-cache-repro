@@ -65,6 +65,14 @@ is unchanged.
   that's still true long-term — but this would help every stable user now, ahead of
   any compiler change, and only for the case where the macro is currently emitting a
   bound it doesn't need.
+- The rustc-side fix is genuinely hard: it was attempted in
+  [rust-lang/rust#92044](https://github.com/rust-lang/rust/pull/92044), shown to fix
+  exactly this slowdown, then **closed unmerged** over solver soundness — region
+  bounds that gate impl selection (`impl<T: 'static>`) and spurious region-equating
+  during canonical instantiation. None of that applies here: this change doesn't
+  touch the trait cache, it just avoids emitting an outlives bound the `&self` case
+  doesn't need. So the macro is the tractable place to land the common-case win while
+  the compiler question (or the next-gen solver) plays out.
 
 I'll follow up with a PR implementing this — gated strictly to the receiver-only
 case, with the existing test suite as the guard — so the change is concrete to

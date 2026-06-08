@@ -88,10 +88,39 @@ region-independent:
   `has_non_region_infer()` (e.g. the `TypeOutlives` fast path) and
   `erase_and_anonymize_regions`.
 
-Caveat: full soundness for region-*sensitive selection* (vs evaluation) would need
-review — the freshener deliberately keeps bound regions / the leak check, and
-`EvaluatedToOkModuloRegions` exists precisely because some answers aren't
-region-independent.
+Caveat: full soundness for region-*sensitive selection* (vs evaluation) is the hard
+part, and it's concrete, not theoretical — see prior art below.
+
+### Prior art: #92044
+
+This was diagnosed and fixed once before —
+[#92044](https://github.com/rust-lang/rust/pull/92044) (@Aaron1011, 2021), *"Discard
+region-related bounds from `ParamEnv` when predicate is global."* It reached the same
+diagnosis ([the canonicalized obligation turns `ParamEnv` regions into inference vars,
+so the global cache is bypassed](https://github.com/rust-lang/rust/pull/92044#issuecomment-998477420))
+and was confirmed to fix #87012 (`evaluate_obligation` **280 ms → 9.87 ms**), but was
+**closed unmerged** — on two obstacles any cache-side fix must clear:
+
+1. **Region bounds can gate selection.** `impl<T: 'static> Trait for T {}` — the
+   `T: 'static` caller bound decides whether the impl applies; erasing it from the
+   cache key risks reusing a result for a `T` that isn't `'static`.
+2. **Spurious region equating.** Instantiating two distinct early-bound regions as
+   inference variables lets them be equated during evaluation without notifying the
+   caller, so the query can return `Ok` when it shouldn't.
+
+Aaron1011's proposed direction was to *anonymize* regions positionally to early-bound
+regions (not inference vars) rather than drop them — the spirit of today's
+[`tcx.erase_and_anonymize_regions`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/erase_regions.rs#L22-L34).
+The work stalled and was closed for inactivity in Nov 2022.
+
+What this issue adds: a re-confirmation that the problem is unfixed on current
+stable/nightly four years on, the `#[async_trait]` outlives bound identified as the
+dominant real-world trigger, and a complementary macro-side fix
+([dtolnay/async-trait#297](https://github.com/dtolnay/async-trait/issues/297)) that
+captures the common-case win **without** the cache-soundness risk above. The PoC at
+the end shares #92044's soundness gap and is a mechanism demonstration, not a proposed
+patch; the principled long-term home is the next-gen solver (which canonicalizes
+regions soundly).
 
 ### Repro & measurements
 
@@ -174,11 +203,15 @@ not trait solving). Note even the clean fix means rewriting *every* async-trait 
   in `evaluate_trait_predicate_recursively` (framed as recursion, not per-root).
 - [#132625](https://github.com/rust-lang/rust/pull/132625) — precedent for
   *narrowing* `can_use_global_caches` (the opaque-types branch) for perf.
+- [#92044](https://github.com/rust-lang/rust/pull/92044) — the prior fix attempt
+  (see "Prior art" above); same diagnosis, validated on #87012, closed unmerged over
+  selection-soundness.
 
-PoC (mechanism demo, not a proposed patch): use `has_non_region_infer()` in
+PoC (mechanism demo, **not** a proposed patch — shares #92044's soundness gap on the
+`impl<T: 'static>` selection case): use `has_non_region_infer()` in
 `can_use_global_caches` + `erase_and_anonymize_regions` on the global cache key →
 on the affected crate, `evaluate_obligation` **76 s → 0.85 s** (re-derivation
-1,191× → 10×), compiled correctly.
+1,191× → 10×), compiled correctly on that crate.
 
 ### Version
 
