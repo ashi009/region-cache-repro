@@ -16,7 +16,7 @@
 //       -> Pin<Box<dyn Future<Output=R> + Send + 'async_trait>>
 //   where Self: 'async_trait, 'life0: 'async_trait;
 // so the `Send` proof of every such method runs under a ParamEnv carrying those
-// outlives bounds. The workaround (see ISSUE.md) flips to an *owned*, `'static`
+// outlives bounds. The workaround (see rustc-issue.md) flips to an *owned*, `'static`
 // boxed future (clone `self` into `async move`), which has no lifetime and so
 // proves `Send` against the GLOBAL cache — the `fn check_i()` column here.
 

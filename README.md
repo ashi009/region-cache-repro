@@ -66,7 +66,7 @@ How an outlives bound trips this:
 (The eval cache key's *predicate* half is already region-erased by the freshener;
 only the `ParamEnv` half isn't — that's the asymmetry. Region-sensitive results are
 reported separately as `EvaluatedToOkModuloRegions`, so this caching is sound; the
-gate is just too coarse for regions. Full analysis + PoC patch in [`ISSUE.md`](ISSUE.md).)
+gate is just too coarse for regions. Full analysis + PoC patch in [`rustc-issue.md`](rustc-issue.md).)
 
 The next-gen trait solver (`-Znext-solver=globally`) canonicalizes the `ParamEnv`
 regions into its global cache key and doesn't blow up — but it's nightly-only and not
@@ -129,4 +129,5 @@ Don't help: `tower::ServiceBuilder` (different cost), `#[axum::debug_handler]`
 - `gen_variants.py` / `trigger.sh` — isolate the trigger (`outlives` / `borrowed` /
   `unified` / `owned`)
 - `minimal.rs` — the shape at a glance, mapped to `#[async_trait]`'s desugaring
-- `ISSUE.md` — upstream issue draft (code-grounded root cause, soundness, PoC patch)
+- `rustc-issue.md` — upstream rustc issue draft (code-grounded root cause, soundness, PoC patch)
+- `async-trait-issue.md` — draft report for dtolnay/async-trait (the `&self` lowering)
