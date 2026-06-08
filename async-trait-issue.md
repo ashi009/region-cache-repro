@@ -27,7 +27,7 @@ trait solver's evaluation cache
 bail to a per-goal local cache, so `Send`/`Sync` of the captured state is re-proven
 from scratch in every impl instead of being cached once. (Full root-cause writeup
 and a standalone repro: https://github.com/ashi009/region-cache-repro ·
-rustc issue: <RUSTC_ISSUE_LINK — filled after filing>.)
+rustc issue: https://github.com/rust-lang/rust/issues/157595.)
 
 Measured with the real macro — one service trait over a deep `Arc<Mutex<…>>` shared
 state, 150 impls: **1.36 s** in `evaluate_obligation` as desugared, vs **13.8 ms**
