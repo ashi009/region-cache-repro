@@ -23,8 +23,8 @@ if param_env.has_infer() || pred.has_infer() {
 }
 ```
 
-The reason a *lifetime* trips this — and specifically an **outlives where-bound**,
-not a `&self` borrow — is a short chain through the source:
+What trips this is specifically an **outlives where-bound** in scope, via a short
+chain through the source:
 
 1. **`ParamEnv` is just its `caller_bounds`** — the in-scope where-clauses
    ([`pub struct ParamEnv { caller_bounds: Clauses }`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/mod.rs#L1002-L1009)).
@@ -61,8 +61,7 @@ how the lifetime is written (`gen_variants.py`/`trigger.sh`, `M=150`, verified o
 | `unified`  | all borrows under one `'a`, `+ 'a` | **12–14 ms** | none → global cache |
 | `owned`    | clone `self` into a `'static` future | **5–7 ms** | none → global cache |
 
-The `&self` borrow, the boxed future, and the `async` block are all innocent — the
-sole trigger is the explicit outlives clause. With the real `async_trait 0.1.88`
+The sole trigger is the explicit outlives clause. With the real `async_trait 0.1.88`
 macro: a service trait over deep shared state at `M=150` spent **1.36 s** in
 `evaluate_obligation` vs **13.8 ms** rewritten to `+ '_` — ~98× from the lifetime
 alone. `#[async_trait]` emits that bound unconditionally (it only *needs* it to

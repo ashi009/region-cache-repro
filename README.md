@@ -48,7 +48,7 @@ if param_env.has_infer() || pred.has_infer() {
 }
 ```
 
-Why an outlives bound trips this but a plain `&self` doesn't:
+How an outlives bound trips this:
 
 - **`ParamEnv` is just its [`caller_bounds`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/mod.rs#L1002-L1009)**
   — the in-scope where-clauses. `has_infer()` walks the regions inside them.
@@ -99,8 +99,8 @@ future borrows `&self`):
   owned     evaluate_obligation= ~5-7ms    # clone self into a 'static future
 ```
 
-~100× — and the only difference is the outlives where-bound, not the borrow. With
-the real `async_trait 0.1.88` macro: 1.36 s vs 13.8 ms rewritten to `+ '_`.
+~100×, with the outlives where-bound the only thing that varies. With the real
+`async_trait 0.1.88` macro: 1.36 s vs 13.8 ms rewritten to `+ '_`.
 
 ## Workaround: keep borrowing, drop the outlives bound
 
