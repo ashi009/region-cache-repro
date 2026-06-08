@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Minimal repro: old trait solver re-derives region-independent auto-trait
+# Minimal repro: the trait solver re-derives region-independent auto-trait
 # (Send/Sync) proofs once per root goal, because a region inference var in the
 # ambient ParamEnv forces results into the per-inference-context LOCAL cache
 # (SelectionContext::can_use_global_caches bails on `param_env.has_infer()`,

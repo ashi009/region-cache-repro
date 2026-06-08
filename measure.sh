@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduces: old trait solver `evaluate_obligation` time scales ~linearly with
+# Reproduces: the trait solver `evaluate_obligation` time scales ~linearly with
 # the number of structurally-overlapping root goals when the ambient ParamEnv
 # carries a region, but stays flat without it. The ONLY difference between the
 # two programs is `<'a, U: 'a>` (a region in the ParamEnv) vs `()`.
@@ -44,6 +44,6 @@ for M in 75 150 300; do python3 gen.py 60 6 "$M" on  > /tmp/_s.rs; run /tmp/_s.r
 echo "== scaling, region=off (stays flat) =="
 for M in 75 150 300; do python3 gen.py 60 6 "$M" off > /tmp/_s.rs; run /tmp/_s.rs "M=$M"; done
 
-echo "== (optional) next-gen solver removes the gap =="
+echo "== (optional) next-gen trait solver removes the gap =="
 python3 gen.py 60 6 150 on > /tmp/_on.rs
 run /tmp/_on.rs "region=on -Znext-solver" "-Znext-solver=globally"

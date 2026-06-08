@@ -1,8 +1,8 @@
-# Old trait solver re-derives region-independent auto-trait obligations once per root goal (`can_use_global_caches` bails on region inference vars)
+# Trait solver re-derives region-independent auto-trait obligations once per root goal (`can_use_global_caches` bails on region inference vars)
 
 ### Summary
 
-In the old (default) solver, `evaluate_obligation` time scales **linearly with the
+In the trait solver, `evaluate_obligation` time scales **linearly with the
 number of structurally-overlapping root goals** when the goal is proven under a
 `ParamEnv` carrying a **region outlives bound**, and is flat otherwise. Auto-traits
 (`Send`/`Sync`) don't depend on regions, so the per-goal re-derivation is pure
@@ -109,12 +109,12 @@ time, `K=60`, depth `6`, verified 2026-06-06:
 
 region=on grows linearly with the root count; region=off is flat. Under
 `-Znext-solver=globally` (nightly) the blowup is gone (`M=150`: 607 ms → 46 ms wall,
-`evaluate_obligation` no longer a hot query) — the new solver canonicalizes the
-whole goal including the `ParamEnv`'s regions into its global cache key, so it's the
-long-term home. But it's nightly-only (only `-Znext-solver=coherence` is stable,
-since 1.84) and not yet at perf parity ([project-goals#113](https://github.com/rust-lang/rust-project-goals/issues/113),
-tracking [#114862](https://github.com/rust-lang/rust/issues/114862)), so an
-old-solver fix is still worth doing.
+`evaluate_obligation` no longer a hot query) — the next-gen trait solver
+canonicalizes the whole goal including the `ParamEnv`'s regions into its global cache
+key, so it's the long-term home. But it's nightly-only (only `-Znext-solver=coherence`
+is stable, since 1.84) and not yet at perf parity ([project-goals#113](https://github.com/rust-lang/rust-project-goals/issues/113),
+tracking [#114862](https://github.com/rust-lang/rust/issues/114862)), so a fix in the
+current solver is still worth doing.
 
 ### Real-world impact (axum/tokio shape)
 
@@ -184,4 +184,4 @@ on the affected crate, `evaluate_obligation` **76 s → 0.85 s** (re-derivation
 rustc 1.96.0 (ac68faa20 2026-05-25)          # stable
 rustc 1.98.0-nightly (8954863c8 2026-06-05)  # nightly
 ```
-Reproduces identically on both (old/default solver).
+Reproduces identically on both (default trait solver).

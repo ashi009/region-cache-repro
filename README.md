@@ -5,8 +5,8 @@ Many axum handlers (or `#[async_trait]` service methods) sharing one
 solving, growing with the **number of handlers** rather than the code in each. A
 `-Zself-profile` shows `evaluate_obligation` on top (often 30–85%).
 
-Cause: the old (default) trait solver **re-proves `Send`/`Sync` of your shared
-state once per handler** instead of caching it. The trigger is one lifetime in
+Cause: the trait solver **re-proves `Send`/`Sync` of your shared state once per
+handler** instead of caching it. The trigger is one lifetime in
 scope — specifically the `where Self: 'async_trait` bound `#[async_trait]` adds.
 
 ## The pattern (idiomatic axum/tokio)
@@ -68,9 +68,9 @@ only the `ParamEnv` half isn't — that's the asymmetry. Region-sensitive result
 reported separately as `EvaluatedToOkModuloRegions`, so this caching is sound; the
 gate is just too coarse for regions. Full analysis + PoC patch in [`ISSUE.md`](ISSUE.md).)
 
-The next-gen solver (`-Znext-solver=globally`) canonicalizes the `ParamEnv` regions
-into its global cache key and doesn't blow up — but it's nightly-only and not yet at
-perf parity, so it's the long-term home, not a fix to ship today.
+The next-gen trait solver (`-Znext-solver=globally`) canonicalizes the `ParamEnv`
+regions into its global cache key and doesn't blow up — but it's nightly-only and not
+yet at perf parity, so it's the long-term home, not a fix to ship today.
 
 ## Reproduce
 
