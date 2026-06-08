@@ -123,6 +123,33 @@ Orthogonal levers: opaque future boundary (`#[inline(never)]` helper returning b
 Don't help: `tower::ServiceBuilder` (different cost), `#[axum::debug_handler]`
 (diagnostics only), cranelift/linker (codegen, not trait solving).
 
+### RPITIT-based alternatives (when you control the trait)
+
+Native `async fn`/`-> impl Future` in traits (RPITIT, 1.75+) capture input lifetimes
+in the opaque return type **without** emitting a `where Self: 'async_trait` outlives
+bound, so they are region-free and don't trigger the blowup — including the two
+shapes the `#[async_trait]` fast-path above can't rescue (extra reference args, and
+generic methods). The catch is dyn-compatibility. Measured at `M=150`, rustc 1.96,
+deep `Arc<Mutex<…>>` state, `evaluate_obligation` self time:
+
+| approach | `dyn`-compatible | `Send` futures | M=150 | use when |
+|---|---|---|---|---|
+| `#[async_trait]` | ✅ | ✅ | **564 ms** | — (the problem) |
+| native RPITIT `-> impl Future + Send` | ❌ | ✅ | **~6–9 ms** | static dispatch; **only** option for generic methods (never `dyn`-able anyway) |
+| [`trait_variant`](https://crates.io/crates/trait-variant) | ❌ (E0038) | ✅ | — | adds a `Send` variant to RPITIT; still static-only |
+| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | ✅ | ✅ | **7.99 ms** | you need `dyn` **and** `Send` futures |
+
+`dynosaur`'s generated erasure layer does emit a `Self: 'dynosaur` bound, so it looks
+like it should blow up — but the expensive `Send` proof happens at the user's
+region-free RPITIT impl and is cached, so it stays flat (measured, not inferred:
+7.99 ms vs async-trait's 564 ms through the identical build). Note its default
+`dyn(box)` mode produces **non-`Send`** futures (useless for `tokio::spawn`); you must
+declare the method `-> impl Future + Send` to get a `Send` boxed future.
+
+So: generic methods → RPITIT (dyn was never possible); `&self` + extra ref args needing
+`dyn` → `dynosaur`; plain `&self` needing `dyn` → either the async-trait fast-path or
+`dynosaur`.
+
 ## Files
 
 - `gen.py` / `measure.sh` — region on/off scaling driver
