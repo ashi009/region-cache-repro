@@ -75,32 +75,34 @@ yet at perf parity, so it's the long-term home, not a fix to ship today.
 ## Reproduce
 
 ```console
-$ RUSTC=$(rustup which rustc) ./measure.sh    # region on vs off, scaling in M
-$ RUSTC=$(rustup which rustc) ./trigger.sh    # isolate the exact trigger
+$ RUSTC=$(rustup which rustc) ./measure.sh
+rustc: rustc 1.96.0 (ac68faa20 2026-05-25)
+== A/B at M=150 (K=60 fields, depth=6) ==
+  region in ParamEnv     wall=  759ms   evaluate_obligation=694.63ms
+  no region              wall=   46ms   evaluate_obligation=4.95ms
+== scaling, region=on  (grows ~linearly with root count) ==
+  M=75                   wall=  385ms   evaluate_obligation=347.31ms
+  M=150                  wall=  740ms   evaluate_obligation=695.36ms
+  M=300                  wall= 1449ms   evaluate_obligation=1.39s
+== scaling, region=off (stays flat) ==
+  M=75                   wall=   42ms   evaluate_obligation=5.32ms
+  M=150                  wall=   48ms   evaluate_obligation=5.87ms
+  M=300                  wall=   59ms   evaluate_obligation=5.95ms
+== (optional) next-gen trait solver removes the gap ==
+  region=on -Znext-solver wall=   53ms   evaluate_obligation=(not a hot query)
 ```
 
-`evaluate_obligation` self time (`K=60`, depth 6, verified 2026-06-06 on stable
-1.96.0 & nightly 1.98.0):
-
-| M (handlers) | region on | region off |
-|---|---|---|
-| 75  | ~280 ms | ~4 ms |
-| 150 | ~560 ms | ~4 ms |
-| 300 | ~1.1 s  | ~5 ms |
-
-region=on scales linearly; region=off is flat. A lifetime in scope turns an O(1)
-cached proof into O(N). `trigger.sh` proves the *same* `Send` goal four ways (each
-future borrows `&self`):
+Same `Send` goal, only the lifetime spelling differs — `./trigger.sh`:
 
 ```console
-  outlives  evaluate_obligation=1.2-1.3s   # #[async_trait] desugaring (outlives bound)
-  borrowed  evaluate_obligation=~12-15ms   # future tied to &self via `+ '_`
-  unified   evaluate_obligation=~12-14ms   # all borrows under one `'a`, `+ 'a`
-  owned     evaluate_obligation= ~5-7ms    # clone self into a 'static future
+== trigger is the region OUTLIVES where-bound, not the &self borrow ==
+  outlives  wall= 1609ms   evaluate_obligation=1.46s       # #[async_trait] desugaring
+  borrowed  wall=  116ms   evaluate_obligation=15.14ms     # future tied to &self via `+ '_`
+  unified   wall=  119ms   evaluate_obligation=15.57ms     # all borrows under one `'a`
+  owned     wall=  204ms   evaluate_obligation=6.95ms      # clone self into a 'static future
 ```
 
-~100×, with the outlives where-bound the only thing that varies. With the real
-`async_trait 0.1.88` macro: 1.36 s vs 13.8 ms rewritten to `+ '_`.
+Real `async_trait 0.1.88`: 1.36 s vs 13.8 ms rewritten to `+ '_`.
 
 ## Workaround: keep borrowing, drop the outlives bound
 
