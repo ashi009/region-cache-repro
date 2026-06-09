@@ -1,84 +1,16 @@
-<!-- DRAFT for dtolnay/async-trait — for review before filing. -->
-<!-- Title: -->
-# Desugaring emits `where Self: 'async_trait` even for `&self`-only methods, triggering a ~100× rustc trait-eval blowup; a receiver-tied lifetime avoids it
+<!-- DRAFT for dtolnay/async-trait — not filed. -->
+# `&self`-only methods get a `where Self: 'async_trait` bound they don't need, and it's ~100× of rustc trait-solving time
 
-This is the macro-side angle on #174 (which you closed, correctly, pointing at
-[rust-lang/rust#87012](https://github.com/rust-lang/rust/issues/87012)). I've now
-pinned the precise rustc trigger, and it turns out the desugaring has a choice that
-sidesteps it at **zero runtime cost** — so there may be something actionable here
-after all, without changing the output contract.
+Follow-up to #174, which you closed pointing at rust-lang/rust#87012. That's still the right call — it is a rustc bug — but I've pinned the trigger, and the macro emits it unnecessarily for the common case.
 
-### The trigger
-
-For `async fn m(&self)`, the macro (v0.1.89) emits a fresh `'async_trait` lifetime
-bounded by region **outlives** clauses, *unconditionally* — even when `&self` is the
-only borrowed input:
+For `async fn m(&self)` the desugaring (v0.1.89) is `fn m<'life0, 'async_trait>(&'life0 self) -> Pin<Box<… + 'async_trait>> where 'life0: 'async_trait, Self: 'async_trait`. Those outlives bounds are region-bearing clauses in the method's `ParamEnv`, which forces the solver to re-prove `Send`/`Sync` of the captured state once per impl instead of caching it (rust-lang/rust#157595). When `&self` is the only borrowed input the `'async_trait` indirection isn't needed — binding the future to the receiver directly is semantically identical (still borrows `self`, still not `'static`) but leaves the `ParamEnv` region-free:
 
 ```rust
-fn m<'life0, 'async_trait>(&'life0 self)
-    -> Pin<Box<dyn Future<Output = R> + Send + 'async_trait>>
-where 'life0: 'async_trait, Self: 'async_trait;
-```
-
-Those `'life0: 'async_trait` / `Self: 'async_trait` outlives bounds land in the
-method's `ParamEnv` as region-bearing clauses. That is *specifically* what makes the
-trait solver's evaluation cache
-([`can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518))
-bail to a per-goal local cache, so `Send`/`Sync` of the captured state is re-proven
-from scratch in every impl instead of being cached once. (Full root-cause writeup
-and a standalone repro: https://github.com/ashi009/region-cache-repro ·
-rustc issue: https://github.com/rust-lang/rust/issues/157595.)
-
-Measured with the real macro — one service trait over a deep `Arc<Mutex<…>>` shared
-state, 150 impls: **1.36 s** in `evaluate_obligation` as desugared, vs **13.8 ms**
-when the same methods return a receiver-tied future. ~100×, from the lifetime form
-alone.
-
-### The point #174 didn't have: it's a lowering choice, not inherent
-
-When the receiver is the only reference input, the `'async_trait` indirection is
-unnecessary — the future can be bound by the receiver lifetime directly, which is
-**semantically identical** (both forms borrow `self`; neither is `'static`) but adds
-no outlives clause, leaving the `ParamEnv` region-free:
-
-```rust
-// proposed lowering for `&self`-only (and `&self` + owned args) methods:
 fn m(&self) -> Pin<Box<dyn Future<Output = R> + Send + '_>>;
-//  equivalently: fn m<'life0>(&'life0 self) -> Pin<Box<… + 'life0>>;  (no where-clause)
 ```
 
-This is a desugaring-internal change: same return type, same boxed `dyn Future +
-Send`, same borrowing behavior — just the region-free spelling. It is **not** a new
-Future representation (#137) or an `impl Future` surface (#274); the output contract
-is unchanged.
+Measured: one trait, 150 impls over a deep `Arc<Mutex<…>>` state — `evaluate_obligation` 1.36 s as desugared vs 13.8 ms receiver-tied.
 
-### Scope / honesty
+Same return type, same boxing, same borrowing — just the region-free spelling, so it's not a new Future type (#137) or an `impl Future` surface (#274). It only applies when the receiver is the sole reference input and the method is non-generic; extra ref args, generic methods (the boxed future captures `T`, needing `T: 'lt` either way), and anything naming `'async_trait` keep the current lowering.
 
-- Applies when the **only reference input is the receiver** (`&self` / `&mut self`),
-  all other params are owned, **and the method has no generic type/const parameters**
-  — the common concrete service/handler shape.
-- Two cases that must keep the current lowering (verified — both re-trigger the same
-  cache miss, so there's no win): methods that borrow **additional** reference
-  parameters (the future's lifetime is the *shortest* input, which needs the
-  `'async_trait` lower-bound; unifying them would change the signature contract); and
-  **generic** methods, because a boxed future capturing `T` requires `where T: 'lt`,
-  itself a region-bearing clause. So this is a fast-path for the common concrete
-  case, not a wholesale change.
-- I realize the established position (#174) is that the cost is rustc's to fix, and
-  that's still true long-term — but this would help every stable user now, ahead of
-  any compiler change, and only for the case where the macro is currently emitting a
-  bound it doesn't need.
-- The rustc-side fix is genuinely hard: it was attempted in
-  [rust-lang/rust#92044](https://github.com/rust-lang/rust/pull/92044), shown to fix
-  exactly this slowdown, then **closed unmerged** over solver soundness — region
-  bounds that gate impl selection (`impl<T: 'static>`) and spurious region-equating
-  during canonical instantiation. None of that applies here: this change doesn't
-  touch the trait cache, it just avoids emitting an outlives bound the `&self` case
-  doesn't need. So the macro is the tractable place to land the common-case win while
-  the compiler question (or the next-gen solver) plays out.
-
-I'll follow up with a PR implementing this — gated strictly to the receiver-only
-case, with the existing test suite as the guard — so the change is concrete to
-evaluate rather than hypothetical. Entirely reasonable to close if you'd still
-rather keep this a pure rustc concern; the aim is just to surface the precise
-trigger and the lowering equivalence, which weren't known at #174.
+Implemented in #298. One regression there worth your call: a method using `where …: 'async_trait` overridden by an impl omitting it hits `E0195` (trait and impl are lowered in separate invocations) — couldn't find code in the wild that does this, but it's real.
