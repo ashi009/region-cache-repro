@@ -1,178 +1,33 @@
-# Why a large axum/tokio server spends most of its compile time proving `Send`
+# Trait solver re-derives `Send` proofs per impl when an outlives where-bound is in scope
 
-Many axum handlers (or `#[async_trait]` service methods) sharing one
-`Arc<AppState>`? Your **frontend** compile time is likely dominated by trait
-solving, growing with the **number of handlers** rather than the code in each. A
-`-Zself-profile` shows `evaluate_obligation` on top (often 30–85%).
-
-Cause: the trait solver **re-proves `Send`/`Sync` of your shared state once per
-handler** instead of caching it. The trigger is one lifetime in
-scope — specifically the `where Self: 'async_trait` bound `#[async_trait]` adds.
-
-## The pattern (idiomatic axum/tokio)
+Repro for rust-lang/rust#157595. One trait, M impls, each wrapping the same `Shared` struct (60 fields of `Arc<Mutex<Vec<…>>>` nested 6 deep); every method's future borrows `&self`. `outlives_*.rs` and `unified_*.rs` differ only in how the method's lifetimes are spelled:
 
 ```rust
-struct AppState { db: PgPool, cache: Arc<RwLock<HashMap<UserId, Arc<Session>>>>, /* … */ }
-type Shared = Arc<AppState>;
+// outlives_*.rs — the shape #[async_trait] emits for every method
+fn check<'life0, 'at>(&'life0 self, x: &'at [u8])
+    -> Pin<Box<dyn Future<Output = u64> + Send + 'at>>
+where Self: 'at, 'life0: 'at;
 
-async fn get_user(State(s): State<Shared>, /* … */) -> Response { /* … .await … */ }
-// … dozens–hundreds of handlers, each capturing `Shared` across `.await`
+// unified_*.rs — same borrows under one lifetime, no outlives clause
+fn check<'a>(&'a self, x: &'a [u8]) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
 ```
 
-1. **Every handler future must be `Send`.** `tokio::spawn` needs `Future: Send +
-   'static`; axum `Handler` needs `type Future: Future + Send`. So for *each*
-   handler the compiler recurses the whole `Arc<AppState>` graph
-   (`Arc<RwLock<HashMap<…>>>`, `Vec`, `Box`, `RawTable`, …) proving `Send`/`Sync`.
-
-2. **A region outlives bound is in scope.** `#[async_trait]` desugars
-   `async fn m(&self)` to a `self`-borrowing future:
-
-   ```rust
-   fn m<'life0, 'async_trait>(&'life0 self) -> Pin<Box<dyn Future<…> + Send + 'async_trait>>
-   where Self: 'async_trait, 'life0: 'async_trait;   // ← this bound is the trigger
-   ```
-
-Result: **N handlers ⇒ N re-derivations of the same shared-state `Send` proof.** On
-a real async crate we measured the same sub-proof rebuilt **592×–1191×**, with
-`evaluate_obligation` ≈ 35% of frontend (~68 s/crate).
-
-## Root cause, in rustc
-
-[`SelectionContext::can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518)
-shares a result via the crate-wide `tcx.evaluation_cache` only if the `ParamEnv` is
-infer-free:
-
-```rust
-if param_env.has_infer() || pred.has_infer() {
-    return false;   // -> per-InferCtxt local cache, dies with the query
-}
+```
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_150.rs
+real	0m0.748s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_300.rs
+real	0m1.464s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_150.rs
+real	0m0.110s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_300.rs
+real	0m0.156s
 ```
 
-How an outlives bound trips this:
-
-- **`ParamEnv` is just its [`caller_bounds`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_middle/src/ty/mod.rs#L1002-L1009)**
-  — the in-scope where-clauses. `has_infer()` walks the regions inside them.
-- **`where Self: 'a` / `'life0: 'a` lowers to region-bearing clauses**
-  ([`ClauseKind::TypeOutlives` / `RegionOutlives`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_hir_analysis/src/collect/predicates_of.rs#L303-L322))
-  that land in `caller_bounds`. A `&self` borrow or `+ '_` return is a signature
-  *type*, not a where-clause — it adds nothing, so that `ParamEnv` is region-free.
-- **The `evaluate_obligation` query** [canonicalizes `param_env.and(predicate)`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/query/evaluate_obligation.rs#L114-L116)
-  and rebuilds it in a fresh `InferCtxt` where each canonical region becomes a fresh
-  [`ReVar`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_infer/src/infer/canonical/mod.rs#L121-L123)
-  (`build_with_canonical` → `instantiate_canonical_var`). So the outlives clauses'
-  regions return as infer vars ⇒ `has_infer()` is true ⇒ local cache ⇒ re-derived
-  per handler.
-
-(The eval cache key's *predicate* half is already region-erased by the freshener;
-only the `ParamEnv` half isn't — that's the asymmetry. Region-sensitive results are
-reported separately as `EvaluatedToOkModuloRegions`, so this caching is sound; the
-gate is just too coarse for regions. Full analysis + PoC patch in [`rustc-issue.md`](rustc-issue.md).)
-
-The next-gen trait solver (`-Znext-solver=globally`) canonicalizes the `ParamEnv`
-regions into its global cache key and doesn't blow up — but it's nightly-only and not
-yet at perf parity, so it's the long-term home, not a fix to ship today.
-
-## Reproduce
-
-```console
-$ RUSTC=$(rustup which rustc) ./measure.sh
-rustc: rustc 1.96.0 (ac68faa20 2026-05-25)
-== A/B at M=150 (K=60 fields, depth=6) ==
-  region in ParamEnv     wall=  759ms   evaluate_obligation=694.63ms
-  no region              wall=   46ms   evaluate_obligation=4.95ms
-== scaling, region=on  (grows ~linearly with root count) ==
-  M=75                   wall=  385ms   evaluate_obligation=347.31ms
-  M=150                  wall=  740ms   evaluate_obligation=695.36ms
-  M=300                  wall= 1449ms   evaluate_obligation=1.39s
-== scaling, region=off (stays flat) ==
-  M=75                   wall=   42ms   evaluate_obligation=5.32ms
-  M=150                  wall=   48ms   evaluate_obligation=5.87ms
-  M=300                  wall=   59ms   evaluate_obligation=5.95ms
-== (optional) next-gen trait solver removes the gap ==
-  region=on -Znext-solver wall=   53ms   evaluate_obligation=(not a hot query)
-```
-
-Same `Send` goal, only the lifetime spelling differs — `./trigger.sh`:
-
-```console
-== trigger is the region OUTLIVES where-bound, not the &self borrow ==
-  outlives  wall= 1609ms   evaluate_obligation=1.46s       # #[async_trait] desugaring
-  borrowed  wall=  116ms   evaluate_obligation=15.14ms     # future tied to &self via `+ '_`
-  unified   wall=  119ms   evaluate_obligation=15.57ms     # all borrows under one `'a`
-  owned     wall=  204ms   evaluate_obligation=6.95ms      # clone self into a 'static future
-```
-
-Real `async_trait 0.1.88`: 1.36 s vs 13.8 ms rewritten to `+ '_`.
-
-## Workaround: keep borrowing, drop the outlives bound
-
-**Zero runtime cost** — tie the future's lifetime to the inputs instead of routing
-through `'async_trait`; no clone, no `unsafe`, sound:
-
-```rust
-fn m(&self) -> Pin<Box<dyn Future<Output = R> + Send + '_>>;                 // &self only
-fn m<'a>(&'a self, x: &'a X) -> Pin<Box<dyn Future<Output = R> + Send + 'a>>; // unify borrows
-```
-
-No outlives clause ⇒ region-free `ParamEnv` ⇒ the `Send` proof hits the global cache
-and is derived once. Drop-in where methods are `.await`ed in the caller's scope;
-native async fn in traits (RPITIT, 1.75+) produce this automatically. Limit: a
-`+ 'a` future isn't `'static`, so it can't be detached via `tokio::spawn` — there,
-own the state instead (`let this = self.clone()` into `async move`; pays a clone).
-
-Orthogonal levers: opaque future boundary (`#[inline(never)]` helper returning boxed
-`dyn Future`); type-erase state (`Arc<dyn Trait + Send + Sync>`); split crates.
-Don't help: `tower::ServiceBuilder` (different cost), `#[axum::debug_handler]`
-(diagnostics only), cranelift/linker (codegen, not trait solving).
-
-### RPITIT-based alternatives — they move the cost, they don't remove it
-
-Native `async fn`/`-> impl Future` in traits (RPITIT, 1.75+) capture input lifetimes
-in the opaque return type **without** a `where Self: 'async_trait` outlives bound, so
-they're region-free and avoid the `evaluate_obligation` blowup — including the two
-shapes the fast-path can't rescue (extra reference args, generic methods).
-
-**But that frontend win does not make total compile time faster — it makes it
-slightly worse.** `#[async_trait]` *erases* every future into `Pin<Box<dyn Future>>`,
-so the state machine isn't monomorphized at call sites. RPITIT keeps the future
-**concrete**, so LLVM optimizes each (large) state machine inline. The trait-solving
-saving is small; the extra codegen is larger. Measured through one **identical**
-command (`cargo rustc --release -- -Zself-profile`, rustc 1.92-nightly, 120 impls,
-non-trivial future bodies — 12 `.await`s each):
-
-| approach | total cpu | `evaluate_obligation` | LLVM | dyn? | Send? |
-|---|---|---|---|---|---|
-| `#[async_trait]` | **4.90 s** | 17.9 ms | 1.25 s | ✅ | ✅ |
-| the `&self` fast-path (our PR) | **4.68 s** | 7.1 ms | 1.09 s | ✅ | ✅ |
-| native RPITIT `-> impl Future + Send` | 5.26 s (+7%) | 8.0 ms | 1.46 s (+17%) | ❌ | ✅ |
-| [`dynosaur`](https://crates.io/crates/dynosaur) + `Send` RPITIT | 5.11 s (+4%) | 8.7 ms | 1.39 s (+11%) | ✅ | ✅ |
-| [`trait_variant`](https://crates.io/crates/trait-variant) | — | — | — | ❌ (E0038) | ✅ |
-
-The split that matters: **our fast-path keeps the boxing**, so codegen is unchanged
-and the frontend saving is pure — total is equal-to-slightly-better. **RPITIT and
-`dynosaur` change the dispatch** (erased → monomorphized), trading a small frontend
-saving for a bigger codegen cost, so total is *worse* with non-trivial futures. The
-gap widens further with generic callers (each instantiation monomorphizes the whole
-await chain), which these benches don't even include.
-
-So RPITIT/`dynosaur` are **not** a compile-time fix — reach for them when you want
-native syntax or to drop the macro, accepting the codegen tradeoff, not to speed up
-builds. (Two correctness notes if you do: `trait_variant` is not dyn-compatible —
-E0038; `dynosaur`'s default `dyn(box)` mode yields **non-`Send`** futures, so you must
-write `-> impl Future + Send` for `tokio::spawn`.) The only changes here that reduce
-total compile time without a codegen penalty are the boxing-preserving fast-path and
-the upstream rustc cache fix.
-
-Caveat on these numbers: a single machine, one rustc, trivial-to-moderate futures;
-they establish the *direction* (frontend saving < codegen cost for the monomorphizing
-forms), not a universal magnitude. On a crate where `evaluate_obligation` genuinely
-dominates total time, the balance can tilt the other way — measure your own.
+rustc 1.96.0 (same on 1.98.0-nightly) — 2× the impls, 2× the time with the outlives clause; near-flat without. 1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl: the outlives bounds lower to region-bearing clauses in `caller_bounds`, the `evaluate_obligation` query canonicalizes the `ParamEnv` and re-instantiates those regions as infer vars, and [`can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518) bails on `param_env.has_infer()` — so the proof never reaches the crate-wide `tcx.evaluation_cache`. This is what makes frontend time scale with handler/impl count in `#[async_trait]`-heavy codebases. Previously diagnosed and fixed in rust-lang/rust#92044, closed unmerged over selection soundness.
 
 ## Files
 
-- `gen.py` / `measure.sh` — region on/off scaling driver
-- `gen_variants.py` / `trigger.sh` — isolate the trigger (`outlives` / `borrowed` /
-  `unified` / `owned`)
-- `minimal.rs` — the shape at a glance, mapped to `#[async_trait]`'s desugaring
-- `rustc-issue.md` — upstream rustc issue draft (code-grounded root cause, soundness, PoC patch)
-- `async-trait-issue.md` — draft report for dtolnay/async-trait (the `&self` lowering)
+- `generate.py <variant> [K D M]` — emits the repro; variants `outlives` / `unified` / `borrowed` (`&self`-only, `+ '_`) / `owned` (clone into `'static`). Only `outlives` is slow.
+- `measure.sh` — times every variant at M=150/300 and shows the `evaluate_obligation` self-time.
+- `WORKAROUNDS.md` — measured tradeoffs for real codebases (boxed `+ '_`, RPITIT, `dynosaur`, owned).
+- `rustc-issue.md` / `async-trait-issue.md` / `async-trait-pr.md` — the upstream reports (rust-lang/rust#157595, dtolnay/async-trait#297, dtolnay/async-trait#298).

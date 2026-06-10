@@ -1,16 +1,30 @@
-# `evaluate_obligation` re-derives region-independent `Send`/`Sync` once per impl when a `where Self: 'a` bound is in scope
+# Trait solver re-derives `Send` proofs per impl when an outlives where-bound is in scope
 
-Proving `Send` of the same shared state in M impls takes time linear in M when the method carries a region outlives bound, and stays flat without it. Same goal, varying only the lifetime spelling ([repro](https://github.com/ashi009/region-cache-repro), `Arc<Mutex<Vec<…>>>` state, M=150, 1.96 stable / 1.98 nightly):
+One trait, M impls, each wrapping the same `Shared` struct (60 fields of `Arc<Mutex<Vec<…>>>` nested 6 deep); every method's future borrows `&self`. The two files differ only in how the method's lifetimes are spelled:
 
-| method signature | `evaluate_obligation` |
-|---|---|
-| `where Self: 'at, 'life0: 'at` (the `#[async_trait]` desugaring) | **1.2–1.3 s** |
-| future tied to `&self` via `+ '_`, no outlives bound | **12–15 ms** |
+```rust
+// outlives_*.rs — the shape #[async_trait] emits for every method
+fn check<'life0, 'at>(&'life0 self, x: &'at [u8])
+    -> Pin<Box<dyn Future<Output = u64> + Send + 'at>>
+where Self: 'at, 'life0: 'at;
 
-Real `async_trait 0.1.88`: 1.36 s → 13.8 ms rewriting the trait to `+ '_`.
+// unified_*.rs — same borrows under one lifetime, no outlives clause
+fn check<'a>(&'a self, x: &'a [u8]) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
+```
 
-The cause is that `can_use_global_caches` bails when `param_env.has_infer()`, and a `where Self: 'a` bound is a region-bearing clause in `caller_bounds` that the `evaluate_obligation` query canonicalizes and `build_with_canonical` re-instantiates as a `ReVar` — so `has_infer()` is true, the result goes to the per-`InferCtxt` local cache, and the region-independent proof is re-derived per impl instead of shared. A `&self` borrow or `+ '_`/RPITIT return is a signature type, not a clause, so it doesn't trigger this; only the explicit outlives bound does. `#[async_trait]` emits it unconditionally (it only needs it to unify multiple input lifetimes), so every `&self` async-trait method pays it.
+```
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_150.rs
+real	0m0.748s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_300.rs
+real	0m1.464s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_150.rs
+real	0m0.110s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_300.rs
+real	0m0.156s
+```
 
-This is [#92044](https://github.com/rust-lang/rust/pull/92044) (@Aaron1011, 2021), confirmed to fix #87012 (280 ms → 9.87 ms) but closed unmerged over two soundness problems that still hold: a region bound can gate selection (`impl<T: 'static>`), and instantiating distinct early-bound regions as inference vars lets them equate without surfacing it. [Aaron's proposed fix](https://github.com/rust-lang/rust/pull/92044#issuecomment-1004471710) — anonymize regions positionally instead of dropping them — is now `tcx.erase_and_anonymize_regions`, which didn't exist then, so this may be more tractable than in 2022. The next-gen solver canonicalizes the whole goal including `ParamEnv` regions and doesn't have the bug, but the old solver is what everyone's on.
+1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl: the outlives bounds lower to region-bearing clauses in `caller_bounds`, the canonicalized query re-instantiates those regions as infer vars, and `can_use_global_caches` bails on `param_env.has_infer()` — so the proof never reaches `tcx.evaluation_cache`. `#[async_trait]` emits that bound on every method, so large async codebases pay this per method × impl.
 
-I have a PoC (`has_non_region_infer()` + `erase_and_anonymize_regions` on the key, 76 s → 0.85 s on an internal crate) but it shares #92044's selection-soundness gap, so it measures the ceiling, not a fix.
+Same diagnosis and fix as #92044 (validated on #87012), closed unmerged over selection soundness (`impl<T: 'static>` bounds participate in selection); it reproduces unchanged today.
+
+Repro: <https://github.com/ashi009/region-cache-repro>. Tested on 1.96.0 stable and 1.98.0-nightly. (`-Znext-solver=globally` on nightly also scales per-impl on this shape — slower still, 1.9 s / 3.3 s — cause not investigated.)
