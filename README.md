@@ -33,6 +33,10 @@ $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta out
 real	0m6.612s
 $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_300.rs
 real	0m0.188s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -Znext-solver=globally -o /tmp/r.rmeta outlives_300.rs
+real	0m14.539s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -Znext-solver=globally -o /tmp/r.rmeta unified_300.rs
+real	0m0.273s
 ```
 
 97% of the outlives time is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl. Why it can't cache: the outlives bound puts a region in `caller_bounds`. The `evaluate_obligation` query canonicalizes the `ParamEnv`, so that region comes back as an infer var. [`can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518) bails on `param_env.has_infer()`. The proof lands in the per-query local cache instead of `tcx.evaluation_cache`, and every impl re-derives it. This is why frontend time scales with handler/impl count in `#[async_trait]`-heavy codebases. Previously diagnosed and fixed in rust-lang/rust#92044; closed unmerged over selection soundness.

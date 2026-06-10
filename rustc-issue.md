@@ -33,10 +33,14 @@ $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta out
 real	0m6.612s
 $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_300.rs
 real	0m0.188s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -Znext-solver=globally -o /tmp/r.rmeta outlives_300.rs
+real	0m14.539s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -Znext-solver=globally -o /tmp/r.rmeta unified_300.rs
+real	0m0.273s
 ```
 
 97% of the outlives time is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl. The outlives bound puts a region in `caller_bounds`. The query canonicalizes the `ParamEnv`, so that region comes back as an infer var. `can_use_global_caches` then bails on `param_env.has_infer()`, and the proof never reaches `tcx.evaluation_cache`. `#[async_trait]` emits that bound on every method, so large async codebases pay this per method × impl.
 
 Same diagnosis and fix as #92044 (validated on #87012), closed unmerged over selection soundness (`impl<T: 'static>` bounds participate in selection); it reproduces unchanged today.
 
-(`-Znext-solver=globally` on nightly also scales per-impl on this shape — slower still, 7.2 s / 14.6 s — cause not investigated.)
+(`-Znext-solver=globally` not removing the gap is unexpected; cause not investigated.)
