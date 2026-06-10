@@ -1,6 +1,6 @@
-Follow-up to #297.
+Follow-up to #297; works around rust-lang/rust#157595.
 
-For a method whose only borrowed input is `&self`/`&mut self` and which has no generic parameters, this ties the boxed future's lifetime to the receiver instead of introducing `'async_trait`:
+`async fn m(&self)` now expands to a future tied to the receiver's lifetime when the receiver is the only borrowed input and the method has no generic parameters, instead of the synthetic `'async_trait` lifetime with its outlives bounds. Those bounds defeat the trait solver's global `Send`/`Sync` cache, so the captured state's proofs are re-derived once per impl. The receiver-tied form is semantically identical — the future still borrows `self`, neither form is `'static` — and the proofs are derived once.
 
 ```rust
 // async fn m(&self) -> R  currently:
@@ -10,10 +10,17 @@ where 'life0: 'async_trait, Self: 'async_trait;
 fn m<'life0>(&'life0 self) -> Pin<Box<dyn Future<Output = R> + Send + 'life0>>;
 ```
 
-The `'async_trait` outlives bounds are region-bearing clauses in the method's `ParamEnv`, which forces every `Send` proof over the captured state into the trait solver's per-query local cache and re-derives it once per impl (rust-lang/rust#157595). The receiver-tied form is semantically identical here — the future still borrows `self`, neither is `'static` — but keeps the `ParamEnv` region-free, so the proof is cached. 150 impls over a deep `Arc<Mutex<Vec<…>>>` state, rustc 1.96: `evaluate_obligation` 1.19 s → 15.75 ms.
+One trait, 150 impls over a deep `Arc<Mutex<Vec<…>>>` state, rustc 1.96.0:
 
-Everything else falls back to the current lowering: extra reference args, generic methods (the boxed future captures `T`, needing `T: 'life0` either way), `impl Trait` args, and any signature that names `'async_trait`.
+| | `evaluate_obligation` |
+|---|---|
+| current lowering | 1.19 s |
+| this PR | 15.75 ms |
 
-Known regression: a method that uses `where …: 'async_trait` and is overridden by an impl omitting the clause now fails with `E0195`, because `#[async_trait]` processes the trait and the impl separately and a region-free signature is late-bound while the general lowering is early-bound. Loud compile error, not UB. I searched GitHub before proposing this: zero hits for `where Self: 'async_trait`, and the ~7 repos using `where T: 'async_trait` all pair it with a shape the fast path already excludes, so I couldn't find code that actually breaks — but it's a real regression, so flagging it.
+Same boxed `dyn Future + Send` either way — no runtime or output-contract change, only the lifetime spelling.
 
-Happy to narrow or drop it. Tests: new `region_free_receiver_lifetime` covering the eligible forms; `lifetime-span.stderr` re-blessed (spans shift on already-invalid code); rustfmt/clippy clean.
+- eligible: `&self` / `&mut self` / `self: &Self` as the sole reference input, no generic/const params; owned args, borrowing returns, and default bodies remain eligible — pinned by a new `region_free_receiver_lifetime` test
+- everything else keeps the current lowering: extra reference args, generic methods (the future captures `T`, needing `T: 'life0` either way), `impl Trait` args, anything naming `'async_trait`
+- `tests/ui/lifetime-span.stderr` re-blessed: spans shift on already-invalid code
+
+**Limitation.** The receiver lifetime becomes late-bound for eligible methods. The one observable break: a trait method written with `where …: 'async_trait` whose impl omits the clause now fails with E0195 — trait and impl expand in separate invocations and disagree on early/late-bound. Loud compile error, not UB. GitHub search finds no code with that combination: `where Self: 'async_trait` has zero hits, and the ~7 repos using `where T: 'async_trait` all pair it with a shape the fast path already excludes.
