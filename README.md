@@ -25,9 +25,16 @@ $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta uni
 real	0m0.156s
 ```
 
-With the outlives clause, 2× the impls costs 2× the time; without it, near-flat. Same on 1.98.0-nightly. 1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl.
+```
+$ rustc -V
+rustc 1.98.0-nightly (8954863c8 2026-06-05)
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_300.rs
+real	0m1.515s
+$ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta unified_300.rs
+real	0m0.175s
+```
 
-Why it can't cache: the outlives bound puts a region in `caller_bounds`. The `evaluate_obligation` query canonicalizes the `ParamEnv`, so that region comes back as an infer var. [`can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518) bails on `param_env.has_infer()`. The proof lands in the per-query local cache instead of `tcx.evaluation_cache`, and every impl re-derives it. This is why frontend time scales with handler/impl count in `#[async_trait]`-heavy codebases. Previously diagnosed and fixed in rust-lang/rust#92044; closed unmerged over selection soundness.
+1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl. Why it can't cache: the outlives bound puts a region in `caller_bounds`. The `evaluate_obligation` query canonicalizes the `ParamEnv`, so that region comes back as an infer var. [`can_use_global_caches`](https://github.com/rust-lang/rust/blob/61d7280f3c4c63fa24c56bdaa9a446151b5a30dc/compiler/rustc_trait_selection/src/traits/select/mod.rs#L1508-L1518) bails on `param_env.has_infer()`. The proof lands in the per-query local cache instead of `tcx.evaluation_cache`, and every impl re-derives it. This is why frontend time scales with handler/impl count in `#[async_trait]`-heavy codebases. Previously diagnosed and fixed in rust-lang/rust#92044; closed unmerged over selection soundness.
 
 ## Files
 
