@@ -1,9 +1,7 @@
 <!-- Rewrite of dtolnay/async-trait#297. -->
-# Desugaring emits `where Self: 'async_trait` even for `&self`-only methods
+# The `'async_trait` outlives bounds trigger a rustc caching bug, re-proving `Send` once per impl
 
-Follow-up to #174: the slowness is a rustc caching bug (rust-lang/rust#157595), but the macro emits the trigger unconditionally, and the common case doesn't need it.
-
-For `async fn m(&self)` the macro (v0.1.89) emits outlives clauses:
+Follow-up to #174. For `async fn m(&self)` the macro (v0.1.89) emits outlives clauses:
 
 ```rust
 fn m<'life0, 'async_trait>(&'life0 self)
@@ -11,7 +9,7 @@ fn m<'life0, 'async_trait>(&'life0 self)
 where 'life0: 'async_trait, Self: 'async_trait;
 ```
 
-Those clauses make the trait solver re-prove `Send` of the captured state once per impl instead of caching it. When the receiver is the only reference input, the `'async_trait` indirection isn't needed — tying the future to the receiver is semantically identical (still borrows `self`, still not `'static`) and leaves the `ParamEnv` region-free:
+Those clauses trigger a rustc caching bug (rust-lang/rust#157595): the trait solver re-proves `Send` of the captured state once per impl instead of caching it. When the receiver is the only reference input, the `'async_trait` indirection isn't needed — tying the future to the receiver is semantically identical (still borrows `self`, still not `'static`) and leaves the `ParamEnv` region-free:
 
 ```rust
 fn m(&self) -> Pin<Box<dyn Future<Output = R> + Send + '_>>;
