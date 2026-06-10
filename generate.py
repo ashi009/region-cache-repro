@@ -11,8 +11,8 @@
 import sys
 
 variant = sys.argv[1] if len(sys.argv) > 1 else "outlives"
-K = int(sys.argv[2]) if len(sys.argv) > 2 else 60   # fields per Shared (width)
-D = int(sys.argv[3]) if len(sys.argv) > 3 else 6    # nesting depth per field
+K = int(sys.argv[2]) if len(sys.argv) > 2 else 150  # fields per Shared (width)
+D = int(sys.argv[3]) if len(sys.argv) > 3 else 10   # nesting depth per field
 M = int(sys.argv[4]) if len(sys.argv) > 4 else 150  # impls (root goals)
 
 o = [f"// Auto-generated: generate.py {variant} {K} {D} {M}. Repro for rust-lang/rust#157595. See README.",

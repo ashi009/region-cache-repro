@@ -4,7 +4,7 @@
 set -euo pipefail
 RUSTC="${RUSTC:-rustc}"
 export RUSTC_BOOTSTRAP=1
-K="${K:-60}"; D="${D:-6}"
+K="${K:-150}"; D="${D:-10}"
 
 run() { # variant M
   local d; d="$(mktemp -d)"; local t0 t1
