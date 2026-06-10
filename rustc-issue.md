@@ -13,6 +13,7 @@ fn check<'a>(&'a self, x: &'a [u8]) -> Pin<Box<dyn Future<Output = u64> + Send +
 ```
 
 ```
+$ git clone https://github.com/ashi009/region-cache-repro && cd region-cache-repro
 $ rustc -V
 rustc 1.96.0 (ac68faa20 2026-05-25)
 $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_150.rs
@@ -38,4 +39,4 @@ real	0m0.188s
 
 Same diagnosis and fix as #92044 (validated on #87012), closed unmerged over selection soundness (`impl<T: 'static>` bounds participate in selection); it reproduces unchanged today.
 
-Repro: <https://github.com/ashi009/region-cache-repro>. (`-Znext-solver=globally` on nightly also scales per-impl on this shape — slower still, 7.2 s / 14.6 s — cause not investigated.)
+(`-Znext-solver=globally` on nightly also scales per-impl on this shape — slower still, 7.2 s / 14.6 s — cause not investigated.)

@@ -13,6 +13,7 @@ fn check<'a>(&'a self, x: &'a [u8]) -> Pin<Box<dyn Future<Output = u64> + Send +
 ```
 
 ```
+$ git clone https://github.com/ashi009/region-cache-repro && cd region-cache-repro
 $ rustc -V
 rustc 1.96.0 (ac68faa20 2026-05-25)
 $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta outlives_150.rs
