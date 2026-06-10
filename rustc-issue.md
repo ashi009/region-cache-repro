@@ -23,7 +23,7 @@ $ time rustc --edition 2021 --crate-type=lib --emit=metadata -o /tmp/r.rmeta uni
 real	0m0.156s
 ```
 
-1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl: the outlives bounds lower to region-bearing clauses in `caller_bounds`, the canonicalized query re-instantiates those regions as infer vars, and `can_use_global_caches` bails on `param_env.has_infer()` — so the proof never reaches `tcx.evaluation_cache`. `#[async_trait]` emits that bound on every method, so large async codebases pay this per method × impl.
+1.38 s of the outlives 1.46 s is `evaluate_obligation`, re-deriving the same `Shared: Send` proof once per impl. The outlives bound puts a region in `caller_bounds`. The query canonicalizes the `ParamEnv`, so that region comes back as an infer var. `can_use_global_caches` then bails on `param_env.has_infer()`, and the proof never reaches `tcx.evaluation_cache`. `#[async_trait]` emits that bound on every method, so large async codebases pay this per method × impl.
 
 Same diagnosis and fix as #92044 (validated on #87012), closed unmerged over selection soundness (`impl<T: 'static>` bounds participate in selection); it reproduces unchanged today.
 
